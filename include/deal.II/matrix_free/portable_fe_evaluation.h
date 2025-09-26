@@ -160,6 +160,17 @@ namespace Portable
     read_dof_values(const DeviceVector<Number> &src);
 
     /**
+     * For the vector @p src, read out the values on the degrees of freedom of
+     * the current cell, and store them internally. Similar functionality as
+     * the function DoFAccessor::get_interpolated_dof_values. As opposed to
+     * the Portable::FEEvaluation::read_dof_values() function, this function
+     * reads out the plain entries from vectors, without taking stored
+     * constraints into account.
+     */
+    DEAL_II_HOST_DEVICE void
+    read_dof_values_plain(const DeviceVector<Number> &src);
+
+    /**
      * Take the value stored internally on dof values of the current cell and
      * sum them into the vector @p dst. The function also applies constraints
      * during the write operation. The functionality is hence similar to the
@@ -328,6 +339,41 @@ namespace Portable
   DEAL_II_HOST_DEVICE void
   FEEvaluation<dim, fe_degree, n_q_points_1d, n_components_, Number>::
     read_dof_values(const DeviceVector<Number> &src)
+  {
+    // Populate the scratch memory
+    Kokkos::parallel_for(Kokkos::TeamThreadRange(data->team_member,
+                                                 tensor_dofs_per_component),
+                         [&](const int &i) {
+                           for (unsigned int c = 0; c < n_components_; ++c)
+                             shared_data->values(i, c) =
+                               src[precomputed_data->local_to_global(
+                                 i + tensor_dofs_per_component * c, cell_id)];
+                         });
+    data->team_member.team_barrier();
+
+    for (unsigned int c = 0; c < n_components_; ++c)
+      {
+        if (precomputed_data->constraint_mask(cell_id * n_components + c) !=
+            dealii::internal::MatrixFreeFunctions::ConstraintKinds::
+              unconstrained)
+          internal::resolve_hanging_nodes<dim, fe_degree, false, Number>(
+            data->team_member,
+            precomputed_data->constraint_weights,
+            precomputed_data->constraint_mask(cell_id * n_components + c),
+            Kokkos::subview(shared_data->values, Kokkos::ALL, c));
+      }
+  }
+
+
+
+  template <int dim,
+            int fe_degree,
+            int n_q_points_1d,
+            int n_components_,
+            typename Number>
+  DEAL_II_HOST_DEVICE void
+  FEEvaluation<dim, fe_degree, n_q_points_1d, n_components_, Number>::
+    read_dof_values_plain(const DeviceVector<Number> &src)
   {
     // Populate the scratch memory
     Kokkos::parallel_for(Kokkos::TeamThreadRange(data->team_member,
